@@ -51,9 +51,11 @@ final class VerifiedDDC {
         // Use the same transport checksum compatibility as queries. Successful I2C
         // delivery alone does not mean the monitor accepted the DDC packet.
         for transportSuppliesSource in [false, true] {
+            try Task.checkCancellation()
             var bytes = DDCCodec.setBrightness(raw)
             if transportSuppliesSource { bytes[bytes.count - 1] ^= 0x51 }
             for _ in 0..<3 {
+                try Task.checkCancellation()
                 usleep(60_000)
                 let result = bytes.withUnsafeMutableBytes { writeI2C(service.service, service.chip, 0x51, $0.baseAddress!, UInt32($0.count)) }
                 guard result == KERN_SUCCESS else { throw DisplayControlError.unavailable("The monitor rejected the DDC/CI brightness command.") }

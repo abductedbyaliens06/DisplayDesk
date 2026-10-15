@@ -37,6 +37,7 @@ private actor BrightnessHardware {
         return ("Software only", nil)
     }
     func set(_ id: CGDirectDisplayID, value: Double) throws -> Double {
+        try Task.checkCancellation()
         if backend.capability(displayID: id).backend == .displayServices {
             try backend.setBrightness(displayID: id, value: Float(value))
             return Double(try backend.getBrightness(displayID: id))
@@ -101,6 +102,8 @@ final class DisplayService: ObservableObject {
     @Published var secondsRemaining = 15
     @Published var colorProfiles: [ColorProfileChoice] = []
     @Published var imagingBusy = false
+    @Published private(set) var isRecovering = false
+    private(set) var isSleeping = false
     @Published private(set) var automaticProfiles = AutomaticProfileConfiguration()
     let isPreview: Bool
     let keyboard = BrightnessKeyboard()
@@ -112,6 +115,8 @@ final class DisplayService: ObservableObject {
     private let automaticStore: AutomaticProfileStore
     private var automaticTask: Task<Void, Never>?
     private var lastAutomaticTopology: [String]?
+    private var wakeTask: Task<Void, Never>?
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var pendingBackup: [DisplaySetting]?
     private var rollbackTask: Task<Void, Never>?
     private var reloadTask: Task<Void, Never>?
@@ -145,13 +150,24 @@ final class DisplayService: ObservableObject {
             }
             keyboard.adjust = { [weak self] delta in self?.adjustBrightnessFromKeyboard(delta: delta) }
             keyboard.start()
+            let center = NSWorkspace.shared.notificationCenter
+            for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
+                workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor in self?.suspendForSleep() }
+                })
+            }
+            for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+                workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor in self?.recoverAfterWake() }
+                })
+            }
             registeredCallback = CGDisplayRegisterReconfigurationCallback(Self.callback, Unmanaged.passUnretained(self).toOpaque()) == .success
             scheduleReload()
             imagingTask = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(2)) } catch { return }
                     guard let self else { return }
-                    guard !self.isBusy && !self.imagingBusy else { continue }
+                    guard !self.isBusy && !self.imagingBusy && !self.isSleeping && !self.isRecovering else { continue }
                     if self.imaging.reconcile(connected: Set(self.monitors.map(\.id))) {
                         self.statusMessage = "HDR boost stopped because the display state or colour table changed."
                     }
@@ -164,14 +180,51 @@ final class DisplayService: ObservableObject {
     isolated deinit {
         if registeredCallback { CGDisplayRemoveReconfigurationCallback(Self.callback, Unmanaged.passUnretained(self).toOpaque()) }
         rollbackTask?.cancel(); reloadTask?.cancel()
-        imagingTask?.cancel(); automaticTask?.cancel()
+        imagingTask?.cancel(); automaticTask?.cancel(); wakeTask?.cancel()
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         for task in brightnessTasks.values { task.cancel() }
     }
 
     var selected: Monitor? { monitors.first { $0.uuid == selectedUUID } ?? monitors.first }
     var hasPendingChanges: Bool { pendingBackup != nil }
-    var controlsDisabled: Bool { isBusy || imagingBusy || hasPendingChanges || isPreview }
+    var controlsDisabled: Bool { isBusy || imagingBusy || hasPendingChanges || isPreview || isSleeping || isRecovering }
     var screenCaptureAllowed: Bool { !isPreview && CGPreflightScreenCaptureAccess() }
+
+    func suspendForSleep() {
+        guard !isPreview, !isSleeping else { return }
+        isSleeping = true; isRecovering = false
+        wakeTask?.cancel(); reloadTask?.cancel(); automaticTask?.cancel(); rollbackTask?.cancel()
+        refreshGeneration = UUID(); isDiscovering = false
+        for task in brightnessTasks.values { task.cancel() }; brightnessTasks.removeAll()
+        keyboard.stop()
+        do { try imaging.stopAllBoosts() } catch { errorMessage = error.localizedDescription }
+        shades.clear()
+        if var backup = pendingBackup {
+            for index in backup.indices { backup[index].hdrBoost = 1 }
+            pendingBackup = backup
+        }
+        statusMessage = "Display controls paused while the screens sleep."
+    }
+
+    func recoverAfterWake() {
+        guard !isPreview, !isRecovering else { return }
+        isSleeping = false; isRecovering = true
+        blockedBrightness.removeAll(); lastAutomaticTopology = nil
+        wakeTask?.cancel()
+        wakeTask = Task { [weak self] in
+            for delay in [900, 1500, 2500] {
+                do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+                guard let self, !self.isSleeping else { return }
+                await self.reload()
+            }
+            guard let self, !Task.isCancelled, !self.isSleeping else { return }
+            self.isRecovering = false
+            if self.hasPendingChanges { await self.revert() }
+            self.keyboard.start()
+            self.statusMessage = "Displays refreshed after wake. HDR boost remains off."
+            self.scheduleAutomaticProfile()
+        }
+    }
 
     func retryHardware() {
         blockedBrightness.removeAll()
@@ -179,7 +232,7 @@ final class DisplayService: ObservableObject {
     }
 
     func scheduleReload() {
-        guard !isPreview else { return }
+        guard !isPreview && !isSleeping else { return }
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
@@ -189,7 +242,7 @@ final class DisplayService: ObservableObject {
     }
 
     func reload() async {
-        guard !isPreview else { return }
+        guard !isPreview && !isSleeping else { return }
         let generation = UUID(); refreshGeneration = generation
         isDiscovering = true
         let old = monitors
@@ -475,6 +528,7 @@ final class DisplayService: ObservableObject {
         pendingBackup = backup; pendingName = name
         do {
             try await apply(settings)
+            guard !isSleeping else { isBusy = false; return }
             isBusy = false
             secondsRemaining = 15
             rollbackTask = Task { [weak self] in
@@ -489,12 +543,14 @@ final class DisplayService: ObservableObject {
         } catch {
             let message = error.localizedDescription
             isBusy = false
+            guard !isSleeping else { statusMessage = "Pending changes will be reverted after wake."; return }
             await revert()
             errorMessage = "Changes were not kept: \(message)"
         }
     }
 
     private func apply(_ settings: [DisplaySetting]) async throws {
+        guard !isSleeping else { throw DisplayControlError.unavailable("The displays are sleeping.") }
         // Resolve every requested mode before making any change.
         var modeChanges: [(CGDirectDisplayID, CGDisplayMode)] = []
         for setting in settings {
@@ -525,10 +581,12 @@ final class DisplayService: ObservableObject {
             imaging.remember(monitor.id, uuid: monitor.uuid)
             try imaging.stopBoost(monitor.id)
             if let enabled = setting.hdrEnabled { try await imaging.setHDR(monitor.id, enabled: enabled) }
+            guard !isSleeping else { throw DisplayControlError.unavailable("The display went to sleep during configuration.") }
             if let profileID = setting.colorProfilePath {
                 try imaging.setProfile(monitor.id, choiceID: profileID)
                 try await Task.sleep(for: .milliseconds(300))
             }
+            guard !isSleeping else { throw DisplayControlError.unavailable("The display went to sleep during configuration.") }
             if let factor = setting.hdrBoost, factor > 1 { try await imaging.setBoost(monitor.id, factor: factor, useMetal: setting.hdrBoostMethod == "metal") }
             if let value = setting.brightness {
                 let actual = try await hardware.set(monitor.id, value: value)
@@ -572,7 +630,7 @@ final class DisplayService: ObservableObject {
     }
 
     func revert() async {
-        guard let backup = pendingBackup, !isBusy else { return }
+        guard let backup = pendingBackup, !isBusy, !isSleeping else { return }
         rollbackTask?.cancel(); rollbackTask = nil
         isBusy = true
         do {
@@ -627,7 +685,7 @@ final class DisplayService: ObservableObject {
         guard !imagingBusy && !isBusy else { errorMessage = "Wait for the display adjustment to finish, then quit again."; return false }
         if hasPendingChanges { await revert() }
         guard !hasPendingChanges else { return false }
-        automaticTask?.cancel()
+        automaticTask?.cancel(); wakeTask?.cancel()
         for task in brightnessTasks.values { task.cancel() }
         do { try imaging.stopAllBoosts() }
         catch { errorMessage = "Could not restore colour curves before quitting: \(error.localizedDescription)"; return false }

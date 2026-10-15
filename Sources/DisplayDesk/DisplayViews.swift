@@ -64,7 +64,6 @@ struct DisplayDashboard: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if !service.hasPendingChanges && !service.isBusy { service.scheduleReload() }
         }
-        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in service.scheduleReload() }
         .onChange(of: service.selectedUUID) { _, _ in service.refreshColorProfiles() }
     }
 
@@ -147,7 +146,7 @@ struct DisplayDashboard: View {
             Spacer()
             SettingsLink { Image(systemName: "gearshape").frame(width: 28, height: 28) }
                 .buttonStyle(.bordered).help("Display Desk settings").accessibilityLabel("Settings")
-            if service.isDiscovering || service.isBusy { ProgressView().controlSize(.small) }
+            if service.isDiscovering || service.isBusy || service.isRecovering { ProgressView().controlSize(.small) }
             Button { service.retryHardware() } label: { Image(systemName: "arrow.clockwise").frame(width: 28, height: 28) }
                 .buttonStyle(.bordered).help("Refresh displays and brightness").accessibilityLabel("Refresh displays")
                 .disabled(service.isBusy || service.hasPendingChanges || service.isPreview)

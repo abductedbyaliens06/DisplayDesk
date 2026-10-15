@@ -41,6 +41,7 @@ final class DisplayImaging {
     private let writesHDR: HDRWrite?
     private var boosts: [CGDirectDisplayID: BoostSession] = [:]
     private var metalBoosts: [CGDirectDisplayID: MetalDesktopBoost] = [:]
+    private var generation = UUID()
     private var originals: [String: ImagingBackup] = [:]
 
     init() {
@@ -147,6 +148,7 @@ final class DisplayImaging {
         guard readsHDR?(id) == enabled else { throw DisplayControlError.unavailable("macOS did not switch HDR. Check the monitor's HDR setting and active display mode.") }
     }
     func setBoost(_ id: CGDirectDisplayID, factor: Double, useMetal: Bool = false) async throws {
+        let requestGeneration = generation
         guard factor.isFinite, (1...2).contains(factor) else { throw DisplayControlError.unavailable("HDR boost must be between 100% and 200%.") }
         if factor <= 1.001 { try stopBoost(id); return }
         guard readsHDR?(id) == true, let screen = screen(id) else { throw DisplayControlError.unavailable("Enable HDR first. SDR gamma brightening cannot unlock the panel's HDR brightness.") }
@@ -163,6 +165,7 @@ final class DisplayImaging {
             metalBoosts[id] = session
             do {
                 try await session.start(displayID: id, excludedWindowIDs: Set(metalBoosts.values.map(\.windowID)))
+                guard generation == requestGeneration else { throw CancellationError() }
                 let headroom = Double(self.screen(id)?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
                 guard headroom > 1.02 else { throw DisplayControlError.unavailable("The display has no active HDR headroom for Metal boost.") }
                 session.factor = min(factor, headroom)
@@ -177,6 +180,7 @@ final class DisplayImaging {
         }
         do {
             try await Task.sleep(for: .milliseconds(350))
+            guard generation == requestGeneration else { throw CancellationError() }
             let headroom = Double(self.screen(id)?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
             guard headroom > 1.02 else { throw DisplayControlError.unavailable("No active HDR brightness headroom is reported. Boost was not applied.") }
             try session.apply(id, factor: min(factor, headroom))
@@ -204,6 +208,7 @@ final class DisplayImaging {
         return changed
     }
     func stopAllBoosts() throws {
+        generation = UUID()
         for id in Set(boosts.keys).union(metalBoosts.keys) { try stopBoost(id) }
     }
 }
