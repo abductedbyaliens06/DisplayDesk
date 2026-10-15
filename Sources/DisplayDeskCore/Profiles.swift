@@ -31,13 +31,14 @@ public struct DisplaySetting: Codable, Equatable, Sendable {
     public var colorProfilePath: String?
     public var hdrEnabled: Bool?
     public var hdrBoost: Double?
+    public var placement: DisplayPlacement?
     public var hdrBoostMethod: String?
     public init(displayUUID: String, name: String, mode: ModeSpec, brightness: Double?, dimming: Double,
-                colorProfilePath: String? = nil, hdrEnabled: Bool? = nil, hdrBoost: Double? = nil, hdrBoostMethod: String? = nil) {
+                colorProfilePath: String? = nil, hdrEnabled: Bool? = nil, hdrBoost: Double? = nil, hdrBoostMethod: String? = nil, placement: DisplayPlacement? = nil) {
         self.displayUUID = displayUUID; self.name = name; self.mode = mode
         self.brightness = brightness; self.dimming = dimming
         self.colorProfilePath = colorProfilePath; self.hdrEnabled = hdrEnabled; self.hdrBoost = hdrBoost
-        self.hdrBoostMethod = hdrBoostMethod
+        self.hdrBoostMethod = hdrBoostMethod; self.placement = placement
     }
 }
 
@@ -99,6 +100,12 @@ public struct ProfileStore: Sendable {
                     && (setting.colorProfilePath.map { $0 == "factory" || $0.hasPrefix("/") } ?? true)
                     && (setting.hdrBoostMethod.map { ["metal", "curves"].contains($0) } ?? true)
               }) else { throw ProfileError.invalidSettings }
+        if profile.settings.contains(where: { $0.placement != nil }) {
+            guard profile.settings.allSatisfy({ $0.placement != nil }) else { throw ProfileError.invalidSettings }
+            try DisplayLayout.validate(profile.settings.map {
+                LayoutScreen(id: $0.displayUUID, width: $0.mode.width, height: $0.mode.height, placement: $0.placement!)
+            })
+        }
     }
 }
 
@@ -106,6 +113,10 @@ public struct ProfileStore: Sendable {
 public enum ProfilePlan {
     public static func resolved(_ profile: DisplayProfile, available: [DisplaySetting], modes: [String: [ModeSpec]]) throws -> [DisplaySetting] {
         try ProfileStore.validate(profile)
+        if profile.settings.contains(where: { $0.placement != nil }),
+           Set(profile.settings.map(\.displayUUID)) != Set(available.map(\.displayUUID)) {
+            throw PlanError.arrangementMismatch
+        }
         return try profile.settings.map { saved in
             guard let display = available.first(where: { $0.displayUUID == saved.displayUUID }) else {
                 throw PlanError.disconnected(saved.name)
@@ -117,9 +128,10 @@ public enum ProfilePlan {
         }
     }
     public enum PlanError: LocalizedError {
-        case disconnected(String), unsupported(String)
+        case disconnected(String), unsupported(String), arrangementMismatch
         public var errorDescription: String? {
             switch self {
+            case .arrangementMismatch: return "Connect exactly the displays saved in this layout before applying this profile."
             case .disconnected(let name): return "Connect \(name) before applying this profile."
             case .unsupported(let name): return "The saved resolution/refresh rate is no longer available on \(name)."
             }

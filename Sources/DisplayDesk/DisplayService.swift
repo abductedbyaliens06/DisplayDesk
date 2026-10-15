@@ -16,10 +16,12 @@ struct Monitor: Identifiable {
     var backend = "Checking…"
     var dimming: Double = 0
     var imaging = ImagingState()
+    var placement = DisplayPlacement(x: 0, y: 0, isMain: true)
+    var layoutSupported = true
     var brightnessSupported: Bool { backend == "Apple display" || backend == "DDC/CI" }
     var setting: DisplaySetting {
         DisplaySetting(displayUUID: uuid, name: name, mode: mode, brightness: brightnessSupported ? brightness : nil, dimming: dimming,
-                       colorProfilePath: imaging.profileID, hdrEnabled: imaging.hdrEnabled, hdrBoost: imaging.boost, hdrBoostMethod: imaging.boostMethod)
+                       colorProfilePath: imaging.profileID, hdrEnabled: imaging.hdrEnabled, hdrBoost: imaging.boost, hdrBoostMethod: imaging.boostMethod, placement: layoutSupported ? placement : nil)
     }
     var resolutions: [ModeSpec] {
         var seen = Set<String>()
@@ -119,6 +121,7 @@ final class DisplayService: ObservableObject {
     private var wakeTask: Task<Void, Never>?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var pendingBackup: [DisplaySetting]?
+    private var pendingLayoutOnly = false
     private var rollbackTask: Task<Void, Never>?
     private var reloadTask: Task<Void, Never>?
     private var brightnessTasks: [String: Task<Void, Never>] = [:]
@@ -292,7 +295,9 @@ final class DisplayService: ObservableObject {
             let previous = old.first { $0.uuid == uuid }
             return Monitor(id: id, uuid: uuid, name: screen?.localizedName ?? "Display \(id)", builtIn: CGDisplayIsBuiltin(id) != 0,
                            mode: spec, modes: unique, brightness: previous?.brightness,
-                           backend: previous?.backend ?? "Checking…", dimming: previous?.dimming ?? 0)
+                           backend: previous?.backend ?? "Checking…", dimming: previous?.dimming ?? 0,
+                           placement: DisplayPlacement(x: Int(CGDisplayBounds(id).minX), y: Int(CGDisplayBounds(id).minY), isMain: id == CGMainDisplayID()),
+                           layoutSupported: CGDisplayIsInMirrorSet(id) == 0 && Int(CGDisplayBounds(id).width) == spec.width && Int(CGDisplayBounds(id).height) == spec.height)
         }.sorted { lhs, rhs in lhs.builtIn != rhs.builtIn ? !lhs.builtIn : lhs.name < rhs.name }
         if !monitors.contains(where: { $0.uuid == selectedUUID }) { selectedUUID = monitors.first?.uuid }
         shades.synchronize(monitors)
@@ -496,7 +501,12 @@ final class DisplayService: ObservableObject {
     func saveProfile(name: String) {
         guard !controlsDisabled, !monitors.isEmpty else { return }
         do {
-            let profile = try ProfileStore.makeProfile(name: name, settings: monitors.map(\.setting), existing: profiles)
+            var settings = monitors.map(\.setting)
+            // Preserve non-layout profiles for mirrored, rotated, or otherwise unsupported arrangements.
+            if !monitors.allSatisfy(\.layoutSupported) || (try? DisplayLayout.validate(layoutScreens)) == nil {
+                for index in settings.indices { settings[index].placement = nil }
+            }
+            let profile = try ProfileStore.makeProfile(name: name, settings: settings, existing: profiles)
             let next = profiles + [profile]
             try store.save(next); profiles = next
             statusMessage = "Saved \(profile.name)."
@@ -521,11 +531,33 @@ final class DisplayService: ObservableObject {
 
     func changeMode(uuid: String, mode: ModeSpec) async {
         guard let monitor = monitors.first(where: { $0.uuid == uuid }) else { return }
-        var setting = monitor.setting; setting.mode = mode
+        var setting = monitor.setting; setting.mode = mode; setting.placement = nil
         await preview(settings: [setting], name: "Display mode")
     }
 
-    private func preview(settings: [DisplaySetting], name: String) async {
+    var layoutScreens: [LayoutScreen] {
+        monitors.map { LayoutScreen(id: $0.uuid, width: $0.mode.width, height: $0.mode.height, placement: $0.placement) }
+    }
+
+    func changeArrangement(_ screens: [LayoutScreen]) async {
+        guard !controlsDisabled, !isDiscovering else { return }
+        do {
+            guard monitors.allSatisfy(\.layoutSupported),
+                  Set(screens.map(\.id)) == Set(monitors.map(\.uuid)),
+                  screens.allSatisfy({ screen in monitors.contains { $0.uuid == screen.id && $0.mode.width == screen.width && $0.mode.height == screen.height } }) else {
+                throw DisplayControlError.unavailable("The display setup changed or uses mirroring/rotation. Refresh before arranging displays.")
+            }
+            try DisplayLayout.validate(screens)
+            let settings = monitors.map { monitor in
+                var setting = monitor.setting
+                setting.placement = screens.first(where: { $0.id == monitor.uuid })?.placement
+                return setting
+            }
+            await preview(settings: settings, name: "Display arrangement", layoutOnly: true)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func preview(settings: [DisplaySetting], name: String, layoutOnly: Bool = false) async {
         guard !controlsDisabled else { return }
         isBusy = true; errorMessage = nil; statusMessage = nil
         for task in brightnessTasks.values { task.cancel() }; brightnessTasks.removeAll()
@@ -540,7 +572,7 @@ final class DisplayService: ObservableObject {
             }
         }
         // Capture hardware brightness at the moment of application, not an old UI sample.
-        for index in backup.indices {
+        for index in backup.indices where !layoutOnly {
             if let monitor = monitors.first(where: { $0.uuid == backup[index].displayUUID }), monitor.brightnessSupported {
                 let (_, value) = await hardware.read(monitor.id)
                 guard let value else {
@@ -550,9 +582,9 @@ final class DisplayService: ObservableObject {
                 backup[index].brightness = value
             }
         }
-        pendingBackup = backup; pendingName = name
+        pendingBackup = backup; pendingName = name; pendingLayoutOnly = layoutOnly
         do {
-            try await apply(settings)
+            try await apply(settings, layoutOnly: layoutOnly)
             guard !isSleeping else { isBusy = false; return }
             isBusy = false
             secondsRemaining = 15
@@ -562,6 +594,9 @@ final class DisplayService: ObservableObject {
                     guard let self, self.pendingBackup != nil else { return }
                     self.secondsRemaining = remaining
                 }
+                // The timer has finished. Revert must not cancel its own task,
+                // which would leave its subsequent discovery pass incomplete.
+                self?.rollbackTask = nil
                 await self?.revert()
             }
             await reload()
@@ -574,7 +609,7 @@ final class DisplayService: ObservableObject {
         }
     }
 
-    private func apply(_ settings: [DisplaySetting]) async throws {
+    private func apply(_ settings: [DisplaySetting], layoutOnly: Bool = false) async throws {
         guard !isSleeping else { throw DisplayControlError.unavailable("The displays are sleeping.") }
         // Resolve every requested mode before making any change.
         var modeChanges: [(CGDirectDisplayID, CGDisplayMode)] = []
@@ -588,19 +623,39 @@ final class DisplayService: ObservableObject {
             guard let mode = availableMode else {
                 throw DisplayControlError.unavailable("The requested mode is unavailable on \(monitor.name).")
             }
-            if setting.brightness != nil && !monitor.brightnessSupported {
+            if !layoutOnly && setting.brightness != nil && !monitor.brightnessSupported {
                 throw DisplayControlError.unavailable("Hardware brightness is unavailable on \(monitor.name).")
             }
-            if let path = setting.colorProfilePath, path != ColorProfileChoice.factoryID,
+            if !layoutOnly, let path = setting.colorProfilePath, path != ColorProfileChoice.factoryID,
                DisplayImaging.profileChoice(URL(fileURLWithPath: path)) == nil {
                 throw DisplayControlError.unavailable("The saved colour profile for \(monitor.name) is missing or invalid.")
             }
-            if setting.hdrEnabled == true && !imaging.state(monitor.id).hdrSupported {
+            if !layoutOnly && setting.hdrEnabled == true && !imaging.state(monitor.id).hdrSupported {
                 throw DisplayControlError.unavailable("HDR is unavailable on \(monitor.name).")
             }
             modeChanges.append((monitor.id, mode))
         }
-        if try configure(modeChanges) { try await Task.sleep(for: .milliseconds(800)) }
+        let layout = settings.contains(where: { $0.placement != nil }) ? settings : nil
+        if let layout {
+            guard monitors.allSatisfy(\.layoutSupported), layout.allSatisfy({ $0.placement != nil }),
+                  Set(layout.map(\.displayUUID)) == Set(monitors.map(\.uuid)) else {
+                throw DisplayControlError.unavailable("The connected displays do not match the saved arrangement.")
+            }
+            try DisplayLayout.validate(layout.map { LayoutScreen(id: $0.displayUUID, width: $0.mode.width, height: $0.mode.height, placement: $0.placement!) })
+        }
+        if try configure(modeChanges, layout: layout) { try await Task.sleep(for: .milliseconds(800)) }
+        if let layout {
+            for setting in layout {
+                guard let monitor = monitors.first(where: { $0.uuid == setting.displayUUID }), let p = setting.placement else {
+                    throw DisplayControlError.unavailable("A display disconnected while applying the layout.")
+                }
+                let bounds = CGDisplayBounds(monitor.id)
+                guard Int(bounds.minX) == p.x, Int(bounds.minY) == p.y, !p.isMain || CGMainDisplayID() == monitor.id else {
+                    throw DisplayControlError.unavailable("macOS adjusted the requested layout. The previous arrangement will be restored.")
+                }
+            }
+        }
+        if layoutOnly { return }
         for setting in settings {
             guard let monitor = monitors.first(where: { $0.uuid == setting.displayUUID }) else { continue }
             imaging.remember(monitor.id, uuid: monitor.uuid)
@@ -625,12 +680,18 @@ final class DisplayService: ObservableObject {
     }
 
     @discardableResult
-    private func configure(_ requested: [(CGDirectDisplayID, CGDisplayMode)]) throws -> Bool {
+    private func configure(_ requested: [(CGDirectDisplayID, CGDisplayMode)], layout: [DisplaySetting]? = nil) throws -> Bool {
         let needsChange = requested.contains { id, mode in
             CGDisplayCopyDisplayMode(id)?.ioDisplayModeID != mode.ioDisplayModeID
-        }
+        } || (layout?.contains { setting in
+            guard let monitor = monitors.first(where: { $0.uuid == setting.displayUUID }), let p = setting.placement else { return false }
+            let bounds = CGDisplayBounds(monitor.id)
+            return Int(bounds.minX) != p.x || Int(bounds.minY) != p.y || (p.isMain && CGMainDisplayID() != monitor.id)
+        } ?? false)
         // Avoid resetting the monitor's DDC connection for brightness-only or unchanged profiles.
         guard needsChange else { return false }
+        // Capture windows cannot keep their old geometry through a mode/layout change.
+        try imaging.stopAllBoosts()
         var configuration: CGDisplayConfigRef?
         let begin = CGBeginDisplayConfiguration(&configuration)
         guard begin == .success else { throw DisplayControlError.configuration(begin.rawValue) }
@@ -642,6 +703,20 @@ final class DisplayService: ObservableObject {
                 throw DisplayControlError.configuration(result.rawValue)
             }
         }
+        if let layout {
+            for setting in layout {
+                guard let monitor = monitors.first(where: { $0.uuid == setting.displayUUID }), let p = setting.placement,
+                      let x = Int32(exactly: p.x), let y = Int32(exactly: p.y) else {
+                    CGCancelDisplayConfiguration(configuration)
+                    throw DisplayControlError.unavailable("A display disconnected during arrangement.")
+                }
+                let result = CGConfigureDisplayOrigin(configuration, monitor.id, x, y)
+                guard result == .success else {
+                    CGCancelDisplayConfiguration(configuration)
+                    throw DisplayControlError.configuration(result.rawValue)
+                }
+            }
+        }
         let result = CGCompleteDisplayConfiguration(configuration, .forSession)
         guard result == .success else { throw DisplayControlError.configuration(result.rawValue) }
         return true
@@ -650,7 +725,7 @@ final class DisplayService: ObservableObject {
     func keepChanges() {
         guard !isBusy, let name = pendingName else { return }
         rollbackTask?.cancel(); rollbackTask = nil
-        pendingBackup = nil; pendingName = nil
+        pendingBackup = nil; pendingName = nil; pendingLayoutOnly = false
         statusMessage = "Kept \(name.lowercased()) changes."
     }
 
@@ -671,10 +746,13 @@ final class DisplayService: ObservableObject {
                 }
                 previousModes.append((monitor.id, mode))
             }
-            if try configure(previousModes) { try? await Task.sleep(for: .milliseconds(800)) }
+            // If topology changed, restore modes without imposing stale display coordinates.
+            let previousLayout = Set(connected.map(\.displayUUID)) == Set(monitors.map(\.uuid)) && connected.allSatisfy({ $0.placement != nil }) && monitors.allSatisfy(\.layoutSupported) ? connected : nil
+            if try configure(previousModes, layout: previousLayout) { try? await Task.sleep(for: .milliseconds(800)) }
+            let skippedLayout = pendingLayoutOnly && previousLayout == nil
             var brightnessFailures: [String] = []
             var imageFailures: [String] = []
-            for saved in connected {
+            for saved in connected where !pendingLayoutOnly {
                 guard let index = monitors.firstIndex(where: { $0.uuid == saved.displayUUID }) else { continue }
                 monitors[index].dimming = saved.dimming
                 shades.set(monitors[index].id, amount: saved.dimming)
@@ -693,8 +771,8 @@ final class DisplayService: ObservableObject {
                     } catch { brightnessFailures.append(saved.name) }
                 }
             }
-            if imageFailures.isEmpty { pendingBackup = nil; pendingName = nil }
-            statusMessage = "Restored the previous display settings."
+            if imageFailures.isEmpty { pendingBackup = nil; pendingName = nil; pendingLayoutOnly = false }
+            statusMessage = skippedLayout ? "The connected displays changed. Restored available display modes; macOS arranged the remaining screens." : "Restored the previous display settings."
             if !brightnessFailures.isEmpty {
                 errorMessage = "Display modes were restored, but hardware brightness could not be restored on: \(brightnessFailures.joined(separator: ", "))."
             }
@@ -735,9 +813,9 @@ final class DisplayService: ObservableObject {
         let native = ModeSpec(width: 3840, height: 2160, pixelWidth: 3840, pixelHeight: 2160, refreshRate: 60)
         let retina = ModeSpec(width: 1512, height: 982, pixelWidth: 3024, pixelHeight: 1964, refreshRate: 0)
         monitors = [Monitor(id: 2, uuid: "demo-external", name: "Studio workspace", builtIn: false, mode: fourK,
-                            modes: [fourK, native], brightness: 0.72, backend: "DDC/CI"),
+                            modes: [fourK, native], brightness: 0.72, backend: "DDC/CI", placement: .init(x: 0, y: 0, isMain: true)),
                     Monitor(id: 1, uuid: "demo-internal", name: "Built-in Retina Display", builtIn: true, mode: retina,
-                            modes: [retina], brightness: 0.55, backend: "Apple display")]
+                            modes: [retina], brightness: 0.55, backend: "Apple display", placement: .init(x: -1512, y: 0))]
         selectedUUID = monitors[0].uuid
         profiles = [DisplayProfile(name: "Everyday", settings: monitors.map(\.setting)), DisplayProfile(name: "Evening", settings: monitors.map(\.setting))]
     }
