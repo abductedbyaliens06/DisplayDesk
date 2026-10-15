@@ -14,7 +14,8 @@ The screenshot uses illustrative data. The running app discovers your actual dis
 - A 15-second keep/revert confirmation for mode and profile changes. Unconfirmed changes restore the previous settings.
 - Named profiles capturing all connected displays' modes, brightness, and dimming.
 - Profile matching by stable display UUID rather than display order or name; missing monitors or unavailable modes are reported before applying the profile.
-- A dashboard, menu bar quick controls, hot-plug/wake refresh, and light/dark appearance.
+- Menu bar operation by default, with brightness, dimming, modes, colour/HDR, profiles, and Keep/Revert in the dropdown. The dashboard is optional; its Dock icon disappears when you close it.
+- Hot-plug/wake refresh and light/dark appearance.
 - RGB display ICC profile selection and import, with a 15-second keep/revert preview and a session-original restore button.
 - HDR/SDR switching on displays where macOS exposes it, with verified state and the same keep/revert preview.
 - Optional experimental HDR desktop boost: a colour-curve method plus a Metal desktop-rendering alternative for systems that clamp colour curves. Boost stops on quit and can be reset from the menu bar or dashboard.
@@ -36,13 +37,13 @@ For development, open `Package.swift` in Xcode and select the DisplayDesk execut
 
 ## Using it
 
-1. Select a display in the sidebar.
+1. Launch Display Desk and click its menu bar icon. It starts without a dashboard or Dock icon. Select a display in the dropdown, or explicitly choose **Open dashboard** for the larger workspace.
 2. Use **Brightness** for the actual backlight. If unavailable, enable DDC/CI in your monitor's on-screen menu and check the connection. Software dimming is a separate image-darkening control and does not reduce backlight power.
 3. Choose a **Looks like** resolution and refresh rate, then click **Apply mode**. Click **Keep changes** within 15 seconds, or let the app revert.
-4. Click **Save current setup** to name a profile. Click a profile in the sidebar to apply it, then keep or revert the changes.
-5. Use the menu bar for quick brightness access. **⌥⌘0** resets software dimming while the dashboard is active.
+4. In the dropdown's **Profiles** tab, name and save the current setup, or apply an existing profile. Keep or revert changes directly in the dropdown. The dashboard also offers profile controls.
+5. Use **More display controls** for arrangement, diagnostics, resetting software adjustments, or quitting. Settings opens from the gear button without adding a Dock icon. **⌥⌘0** resets software dimming while the dashboard is active.
 
-Software dimming resets when the app quits. Display modes are applied for the current macOS login session. Profiles remain saved for later use; they are not automatically applied at login or when a monitor connects.
+Software dimming resets when the app quits. Display modes are applied for the current macOS login session. Profiles remain saved for later use. Automatic application at login or monitor connection is opt-in under Settings.
 
 ## Colour and extra brightness
 
@@ -79,7 +80,7 @@ Tests cover profile round trips, legacy profile decoding, invalid values, duplic
 
 Native detection, brightness read/write at the existing value, profile application/confirmation, and automatic rollback at the existing mode were verified on the development Mac's built-in display. The connected Pro 27UD-10 external monitor was detected through DDC/CI; current-mode profile application and rollback were verified. Its DCI-P3 monitor preset was subsequently identified as locking brightness, including physical controls; an unlocked preset is required.
 
-For the colour/HDR additions, the development monitor passed alternate ICC assignment/readback, 15-second automatic ICC rollback, HDR switching/readback and manual restoration, and SDR boost rejection. The Metal shader compiled and a live local stream started, survived reconciliation, and stopped cleanly. A requested 110% boost was capped at the currently reported 1.0905× EDR headroom. Original SDR state and the original colour profile were restored afterward. The colour-curve boost path was clamped to 1.0 by this macOS configuration and correctly reported failure. Fourteen automated tests pass. Physical luminance and colour accuracy have not been measured; permission availability and Metal output on other displays still require local verification.
+For the colour/HDR additions, the development monitor passed alternate ICC assignment/readback, 15-second automatic ICC rollback, HDR switching/readback and manual restoration, and SDR boost rejection. The Metal shader compiled and a live local stream started, survived reconciliation, and stopped cleanly. A requested 110% boost was capped at the currently reported 1.0905× EDR headroom. Original SDR state and the original colour profile were restored afterward. The colour-curve boost path was clamped to 1.0 by this macOS configuration and correctly reported failure. The automated suite covers profiles, DDC, colour curves, keyboard steps, automatic rules, diagnostics, and layouts. Physical luminance and colour accuracy have not been measured; permission availability and Metal output on other displays still require local verification.
 
 ## Local data
 
@@ -102,7 +103,7 @@ Open **Settings → Startup** to enable launch at login. This uses macOS Login I
 
 ## Automatic profiles
 
-In **Settings → Automatic profiles**, choose a saved profile and use it for the currently connected external-monitor setup. Enable automation separately. Rules match the exact external display UUID set, not connection order or display names. Startup and monitor connection changes are considered after discovery settles. Missing profiles, ambiguous rules, or unavailable saved displays/modes are not applied. The app previews changes and opens the dashboard: choose **Keep changes** within 15 seconds, or the previous setup is restored. One attempt is made per topology change; merely refocusing the app does not reapply a rule. Rules are stored locally in `~/Library/Application Support/DisplayDesk/automation.json`; this file contains device identities and should stay private.
+In **Settings → Automatic profiles**, choose a saved profile and use it for the currently connected external-monitor setup. Enable automation separately. Rules match the exact external display UUID set, not connection order or display names. Startup and monitor connection changes are considered after discovery settles. Missing profiles, ambiguous rules, or unavailable saved displays/modes are not applied. The app previews changes without opening the dashboard. A countdown appears in the menu bar: open it and choose **Keep changes** within 15 seconds, or the previous setup is restored. One attempt is made per topology change; merely refocusing the app does not reapply a rule. Rules are stored locally in `~/Library/Application Support/DisplayDesk/automation.json`; this file contains device identities and should stay private.
 
 ## Brightness keyboard controls
 
@@ -123,3 +124,17 @@ Open **Arrange displays** in the dashboard header. Drag screens to match your de
 **Preview layout** applies the arrangement for the current login session. Keep it within 15 seconds or the previous layout is restored. Layout changes stop HDR boost; re-enable it afterward if needed. Arrangement edits do not send brightness, colour-profile, or HDR commands. Software dimming follows the moved displays.
 
 New profiles include positions and the main display when the current layout is supported. Applying such a profile requires exactly its saved set of displays. Existing profiles keep working without changing arrangement. Mirrored or rotated setups retain settings-only profiles; arrangement editing for those setups is currently unavailable. If displays disconnect during a preview, rollback restores available modes and lets macOS arrange the remaining screens.
+
+## Menu bar and Dock behaviour
+
+Display Desk starts as a menu bar app, including when launched at login. It does not restore an old dashboard window at startup. Brightness, software dimming, resolution/refresh rate, colour/HDR controls, saving/applying/deleting profiles, and preview confirmation are available from the dropdown. Colour/HDR controls expand on demand. Errors and status messages appear there too.
+
+**Open dashboard** shows the larger window and a Dock icon. Closing that window removes the Dock icon while keeping monitoring, shortcuts, and display adjustments active. Minimizing it keeps the dashboard open and its Dock icon available. Settings, arrangement, and diagnostics can be opened without a dashboard or Dock icon. Automatic profiles do not open the dashboard; unconfirmed changes still time out normally. Explicitly reopening the running app from Finder brings up the dashboard.
+
+To check the AppKit Dock lifecycle on a Mac with an active graphical login:
+
+```sh
+./scripts/check-window-lifecycle.sh
+```
+
+This exercises the real activation policy and window-close notifications in a separate test process, without changing display settings.

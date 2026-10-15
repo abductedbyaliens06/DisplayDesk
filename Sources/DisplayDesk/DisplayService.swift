@@ -494,7 +494,6 @@ final class DisplayService: ObservableObject {
             await self.applyProfile(profile)
             guard self.hasPendingChanges else { return }
             self.statusMessage = "Automatic profile: \(profile.name). Keep changes within 15 seconds."
-            NotificationCenter.default.post(name: .displayDeskShowDashboard, object: nil)
         }
     }
 

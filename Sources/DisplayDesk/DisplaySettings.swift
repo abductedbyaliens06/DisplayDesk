@@ -39,7 +39,7 @@ struct DisplaySettings: View {
             Section("Automatic profiles") {
                 Toggle("Apply a profile when monitors connect", isOn: Binding(get: { service.automaticProfiles.enabled }, set: { service.setAutomaticProfilesEnabled($0) }))
                     .disabled(service.isPreview)
-                Text("Matches the exact set of external monitors. Changes still require Keep changes within 15 seconds; otherwise the previous setup returns.")
+                Text("Matches the exact set of external monitors. Open the menu bar and choose Keep changes within 15 seconds; otherwise the previous setup returns.")
                     .font(.caption).foregroundStyle(.secondary)
                 Picker("Profile for this monitor setup", selection: $selectedProfile) {
                     Text("Choose a saved profile").tag(nil as UUID?)
