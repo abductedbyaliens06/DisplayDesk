@@ -95,3 +95,19 @@ Resources/                    App metadata and third-party license
 scripts/build-app.sh          Builds the standalone app bundle
 Preview/                      Native renders with illustrative data
 ```
+
+## Startup
+
+Open **Settings → Startup** to enable launch at login. This uses macOS Login Items and is off by default. Keep the app at a permanent path before enabling it. If macOS requests approval, use **Open Login Items…** to approve the registration. Turning it off unregisters the item; it does not install a helper or change display settings.
+
+## Automatic profiles
+
+In **Settings → Automatic profiles**, choose a saved profile and use it for the currently connected external-monitor setup. Enable automation separately. Rules match the exact external display UUID set, not connection order or display names. Startup and monitor connection changes are considered after discovery settles. Missing profiles, ambiguous rules, or unavailable saved displays/modes are not applied. The app previews changes and opens the dashboard: choose **Keep changes** within 15 seconds, or the previous setup is restored. One attempt is made per topology change; merely refocusing the app does not reapply a rule. Rules are stored locally in `~/Library/Application Support/DisplayDesk/automation.json`; this file contains device identities and should stay private.
+
+## Brightness keyboard controls
+
+In **Settings → Brightness keys**, enable global **Control–Option–Up/Down** shortcuts, optional native brightness keys, or both. Choose the monitor under the pointer, the dashboard-selected monitor, or all connected monitors. Normal steps are 5%; Shift plus a native brightness key uses 1%. Unsupported hardware falls back to software dimming, never HDR upscaling. Shortcuts work without Accessibility permission. Intercepting native brightness keys requires Accessibility permission, requested only with **Allow Accessibility…**. Both are off by default. Only brightness events and the registered shortcuts are handled; other keys pass through. Native events pass through during display changes or when no target is available, allowing normal system behavior. Avoid enabling native-key interception in several display utilities at once.
+
+## Sleep and wake
+
+System and display sleep pause keyboard interception, cancel queued brightness/discovery/automation work, remove software overlays, and stop HDR boost. Wake performs three bounded refreshes while controls are paused, clears stale DDC read-only results, restores software dimming and keyboard registration, and checks automatic-profile rules once the connection settles. An unconfirmed configuration is reverted after wake rather than being kept accidentally. HDR boost is not silently resumed by recovery; an explicitly configured automatic profile may request it as part of its normal confirmation preview.

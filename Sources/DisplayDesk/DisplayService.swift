@@ -37,6 +37,7 @@ private actor BrightnessHardware {
         return ("Software only", nil)
     }
     func set(_ id: CGDirectDisplayID, value: Double) throws -> Double {
+        try Task.checkCancellation()
         if backend.capability(displayID: id).backend == .displayServices {
             try backend.setBrightness(displayID: id, value: Float(value))
             return Double(try backend.getBrightness(displayID: id))
@@ -101,12 +102,21 @@ final class DisplayService: ObservableObject {
     @Published var secondsRemaining = 15
     @Published var colorProfiles: [ColorProfileChoice] = []
     @Published var imagingBusy = false
+    @Published private(set) var isRecovering = false
+    private(set) var isSleeping = false
+    @Published private(set) var automaticProfiles = AutomaticProfileConfiguration()
     let isPreview: Bool
+    let keyboard = BrightnessKeyboard()
 
     private let hardware = BrightnessHardware()
     private let shades = DimmingWindows()
     private let imaging = DisplayImaging()
     private let store: ProfileStore
+    private let automaticStore: AutomaticProfileStore
+    private var automaticTask: Task<Void, Never>?
+    private var lastAutomaticTopology: [String]?
+    private var wakeTask: Task<Void, Never>?
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var pendingBackup: [DisplaySetting]?
     private var rollbackTask: Task<Void, Never>?
     private var reloadTask: Task<Void, Never>?
@@ -126,18 +136,38 @@ final class DisplayService: ObservableObject {
         isPreview = preview
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         store = ProfileStore(fileURL: base.appendingPathComponent("DisplayDesk/profiles.json"))
+        automaticStore = AutomaticProfileStore(fileURL: base.appendingPathComponent("DisplayDesk/automation.json"))
         if preview {
             loadPreview()
         } else {
+            do { automaticProfiles = try automaticStore.load() }
+            catch { errorMessage = "Could not read automatic profiles: \(error.localizedDescription)" }
             do { profiles = try store.load() }
             catch { errorMessage = "Could not read saved profiles: \(error.localizedDescription)" }
+            keyboard.canAdjust = { [weak self] in
+                guard let self else { return false }
+                return !self.controlsDisabled && !self.isDiscovering && !self.keyboardTargets.isEmpty
+            }
+            keyboard.adjust = { [weak self] delta in self?.adjustBrightnessFromKeyboard(delta: delta) }
+            keyboard.start()
+            let center = NSWorkspace.shared.notificationCenter
+            for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
+                workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor in self?.suspendForSleep() }
+                })
+            }
+            for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+                workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor in self?.recoverAfterWake() }
+                })
+            }
             registeredCallback = CGDisplayRegisterReconfigurationCallback(Self.callback, Unmanaged.passUnretained(self).toOpaque()) == .success
             scheduleReload()
             imagingTask = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(2)) } catch { return }
                     guard let self else { return }
-                    guard !self.isBusy && !self.imagingBusy else { continue }
+                    guard !self.isBusy && !self.imagingBusy && !self.isSleeping && !self.isRecovering else { continue }
                     if self.imaging.reconcile(connected: Set(self.monitors.map(\.id))) {
                         self.statusMessage = "HDR boost stopped because the display state or colour table changed."
                     }
@@ -150,14 +180,51 @@ final class DisplayService: ObservableObject {
     isolated deinit {
         if registeredCallback { CGDisplayRemoveReconfigurationCallback(Self.callback, Unmanaged.passUnretained(self).toOpaque()) }
         rollbackTask?.cancel(); reloadTask?.cancel()
-        imagingTask?.cancel()
+        imagingTask?.cancel(); automaticTask?.cancel(); wakeTask?.cancel()
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         for task in brightnessTasks.values { task.cancel() }
     }
 
     var selected: Monitor? { monitors.first { $0.uuid == selectedUUID } ?? monitors.first }
     var hasPendingChanges: Bool { pendingBackup != nil }
-    var controlsDisabled: Bool { isBusy || imagingBusy || hasPendingChanges || isPreview }
+    var controlsDisabled: Bool { isBusy || imagingBusy || hasPendingChanges || isPreview || isSleeping || isRecovering }
     var screenCaptureAllowed: Bool { !isPreview && CGPreflightScreenCaptureAccess() }
+
+    func suspendForSleep() {
+        guard !isPreview, !isSleeping else { return }
+        isSleeping = true; isRecovering = false
+        wakeTask?.cancel(); reloadTask?.cancel(); automaticTask?.cancel(); rollbackTask?.cancel()
+        refreshGeneration = UUID(); isDiscovering = false
+        for task in brightnessTasks.values { task.cancel() }; brightnessTasks.removeAll()
+        keyboard.stop()
+        do { try imaging.stopAllBoosts() } catch { errorMessage = error.localizedDescription }
+        shades.clear()
+        if var backup = pendingBackup {
+            for index in backup.indices { backup[index].hdrBoost = 1 }
+            pendingBackup = backup
+        }
+        statusMessage = "Display controls paused while the screens sleep."
+    }
+
+    func recoverAfterWake() {
+        guard !isPreview, !isRecovering else { return }
+        isSleeping = false; isRecovering = true
+        blockedBrightness.removeAll(); lastAutomaticTopology = nil
+        wakeTask?.cancel()
+        wakeTask = Task { [weak self] in
+            for delay in [900, 1500, 2500] {
+                do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+                guard let self, !self.isSleeping else { return }
+                await self.reload()
+            }
+            guard let self, !Task.isCancelled, !self.isSleeping else { return }
+            self.isRecovering = false
+            if self.hasPendingChanges { await self.revert() }
+            self.keyboard.start()
+            self.statusMessage = "Displays refreshed after wake. HDR boost remains off."
+            self.scheduleAutomaticProfile()
+        }
+    }
 
     func retryHardware() {
         blockedBrightness.removeAll()
@@ -165,7 +232,7 @@ final class DisplayService: ObservableObject {
     }
 
     func scheduleReload() {
-        guard !isPreview else { return }
+        guard !isPreview && !isSleeping else { return }
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
@@ -175,7 +242,7 @@ final class DisplayService: ObservableObject {
     }
 
     func reload() async {
-        guard !isPreview else { return }
+        guard !isPreview && !isSleeping else { return }
         let generation = UUID(); refreshGeneration = generation
         isDiscovering = true
         let old = monitors
@@ -217,7 +284,10 @@ final class DisplayService: ObservableObject {
                 if brightnessTasks[uuid] == nil && !isBusy { monitors[index].brightness = brightness }
             }
         }
-        if refreshGeneration == generation { isDiscovering = false }
+        if refreshGeneration == generation {
+            isDiscovering = false
+            scheduleAutomaticProfile()
+        }
     }
 
     func setBrightness(uuid: String, value: Double) {
@@ -324,6 +394,80 @@ final class DisplayService: ObservableObject {
         } catch { errorMessage = "Could not restore the colour curves: \(error.localizedDescription)" }
     }
 
+    private var keyboardTargets: [Monitor] {
+        switch keyboard.target {
+        case "all": return monitors
+        case "selected": return selected.map { [$0] } ?? []
+        default:
+            let point = NSEvent.mouseLocation
+            guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
+                  let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return [] }
+            return monitors.filter { $0.id == id }
+        }
+    }
+
+    func adjustBrightnessFromKeyboard(delta: Double) {
+        guard !controlsDisabled && !isDiscovering else { return }
+        let targets = keyboardTargets
+        for monitor in targets {
+            if monitor.brightnessSupported, let current = monitor.brightness,
+               let next = BrightnessStep.hardware(current: current, delta: delta) {
+                setBrightness(uuid: monitor.uuid, value: next)
+            } else if let next = BrightnessStep.dimming(current: monitor.dimming, delta: delta) {
+                setDimming(uuid: monitor.uuid, amount: next)
+            }
+        }
+        statusMessage = "Brightness adjusted on \(targets.count) display(s)."
+    }
+
+    var externalTopology: [String] { monitors.filter { !$0.builtIn }.map(\.uuid).sorted() }
+
+    func setAutomaticProfilesEnabled(_ enabled: Bool) {
+        var next = automaticProfiles; next.enabled = enabled
+        saveAutomaticConfiguration(next)
+    }
+
+    func addAutomaticProfile(profileID: UUID) {
+        guard !externalTopology.isEmpty, profiles.contains(where: { $0.id == profileID }) else { return }
+        var next = automaticProfiles
+        next.rules.removeAll { Set($0.externalDisplayUUIDs) == Set(externalTopology) }
+        next.rules.append(AutomaticProfileRule(profileID: profileID, externalDisplayUUIDs: externalTopology))
+        saveAutomaticConfiguration(next)
+    }
+
+    func removeAutomaticProfile(id: UUID) {
+        var next = automaticProfiles; next.rules.removeAll { $0.id == id }
+        saveAutomaticConfiguration(next)
+    }
+
+    private func saveAutomaticConfiguration(_ next: AutomaticProfileConfiguration) {
+        guard !isPreview else { return }
+        do {
+            try automaticStore.save(next)
+            automaticProfiles = next
+            automaticTask?.cancel(); lastAutomaticTopology = nil
+            scheduleAutomaticProfile()
+        } catch { errorMessage = "Could not save automatic profiles: \(error.localizedDescription)" }
+    }
+
+    private func scheduleAutomaticProfile() {
+        let topology = externalTopology
+        guard automaticProfiles.enabled, topology != lastAutomaticTopology else { return }
+        automaticTask?.cancel()
+        automaticTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
+            guard let self, !Task.isCancelled, self.externalTopology == topology,
+                  !self.controlsDisabled, !self.isDiscovering else { return }
+            self.lastAutomaticTopology = topology
+            guard let profileID = self.automaticProfiles.matchingProfile(externalDisplayUUIDs: topology, availableProfileIDs: Set(self.profiles.map(\.id))),
+                  let profile = self.profiles.first(where: { $0.id == profileID }) else { return }
+            await self.applyProfile(profile)
+            guard self.hasPendingChanges else { return }
+            self.statusMessage = "Automatic profile: \(profile.name). Keep changes within 15 seconds."
+            NotificationCenter.default.post(name: .displayDeskShowDashboard, object: nil)
+        }
+    }
+
     func saveProfile(name: String) {
         guard !controlsDisabled, !monitors.isEmpty else { return }
         do {
@@ -384,6 +528,7 @@ final class DisplayService: ObservableObject {
         pendingBackup = backup; pendingName = name
         do {
             try await apply(settings)
+            guard !isSleeping else { isBusy = false; return }
             isBusy = false
             secondsRemaining = 15
             rollbackTask = Task { [weak self] in
@@ -398,12 +543,14 @@ final class DisplayService: ObservableObject {
         } catch {
             let message = error.localizedDescription
             isBusy = false
+            guard !isSleeping else { statusMessage = "Pending changes will be reverted after wake."; return }
             await revert()
             errorMessage = "Changes were not kept: \(message)"
         }
     }
 
     private func apply(_ settings: [DisplaySetting]) async throws {
+        guard !isSleeping else { throw DisplayControlError.unavailable("The displays are sleeping.") }
         // Resolve every requested mode before making any change.
         var modeChanges: [(CGDirectDisplayID, CGDisplayMode)] = []
         for setting in settings {
@@ -434,10 +581,12 @@ final class DisplayService: ObservableObject {
             imaging.remember(monitor.id, uuid: monitor.uuid)
             try imaging.stopBoost(monitor.id)
             if let enabled = setting.hdrEnabled { try await imaging.setHDR(monitor.id, enabled: enabled) }
+            guard !isSleeping else { throw DisplayControlError.unavailable("The display went to sleep during configuration.") }
             if let profileID = setting.colorProfilePath {
                 try imaging.setProfile(monitor.id, choiceID: profileID)
                 try await Task.sleep(for: .milliseconds(300))
             }
+            guard !isSleeping else { throw DisplayControlError.unavailable("The display went to sleep during configuration.") }
             if let factor = setting.hdrBoost, factor > 1 { try await imaging.setBoost(monitor.id, factor: factor, useMetal: setting.hdrBoostMethod == "metal") }
             if let value = setting.brightness {
                 let actual = try await hardware.set(monitor.id, value: value)
@@ -481,7 +630,7 @@ final class DisplayService: ObservableObject {
     }
 
     func revert() async {
-        guard let backup = pendingBackup, !isBusy else { return }
+        guard let backup = pendingBackup, !isBusy, !isSleeping else { return }
         rollbackTask?.cancel(); rollbackTask = nil
         isBusy = true
         do {
@@ -536,9 +685,11 @@ final class DisplayService: ObservableObject {
         guard !imagingBusy && !isBusy else { errorMessage = "Wait for the display adjustment to finish, then quit again."; return false }
         if hasPendingChanges { await revert() }
         guard !hasPendingChanges else { return false }
+        automaticTask?.cancel(); wakeTask?.cancel()
         for task in brightnessTasks.values { task.cancel() }
         do { try imaging.stopAllBoosts() }
         catch { errorMessage = "Could not restore colour curves before quitting: \(error.localizedDescription)"; return false }
+        keyboard.stop()
         shades.clear()
         return true
     }
