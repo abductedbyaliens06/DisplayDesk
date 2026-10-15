@@ -209,13 +209,14 @@ struct DisplayDashboard: View {
     }
 }
 
-private struct DisplayDetail: View {
+struct DisplayDetail: View {
     @ObservedObject var service: DisplayService
     let monitor: Monitor
+    let compact: Bool
     @State private var modeID: String
 
-    init(service: DisplayService, monitor: Monitor) {
-        self.service = service; self.monitor = monitor
+    init(service: DisplayService, monitor: Monitor, compact: Bool = false) {
+        self.service = service; self.monitor = monitor; self.compact = compact
         _modeID = State(initialValue: monitor.mode.id)
     }
     private var chosen: ModeSpec { monitor.modes.first { $0.id == modeID } ?? monitor.mode }
@@ -228,21 +229,23 @@ private struct DisplayDetail: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            Panel {
-                HStack(spacing: 22) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 12).fill(LinearGradient(colors: [accent.opacity(0.20), accent.opacity(0.03)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        Image(systemName: monitor.builtIn ? "laptopcomputer" : "display").font(.system(size: 54, weight: .ultraLight)).foregroundStyle(accent)
-                    }.frame(width: 140, height: 96)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(monitor.mode.resolutionLabel).font(.system(size: 19, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text(monitor.mode.refreshLabel).font(.system(size: 12)).foregroundStyle(.secondary)
-                        HStack(spacing: 5) {
-                            Image(systemName: monitor.brightnessSupported ? "checkmark.circle.fill" : "circle.dashed")
-                            Text(monitor.backend)
-                        }.font(.system(size: 10, weight: .medium)).foregroundStyle(monitor.brightnessSupported ? accent : .secondary)
+            if !compact {
+                Panel {
+                    HStack(spacing: 22) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12).fill(LinearGradient(colors: [accent.opacity(0.20), accent.opacity(0.03)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            Image(systemName: monitor.builtIn ? "laptopcomputer" : "display").font(.system(size: 54, weight: .ultraLight)).foregroundStyle(accent)
+                        }.frame(width: 140, height: 96)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(monitor.mode.resolutionLabel).font(.system(size: 19, weight: .semibold, design: .rounded)).monospacedDigit()
+                            Text(monitor.mode.refreshLabel).font(.system(size: 12)).foregroundStyle(.secondary)
+                            HStack(spacing: 5) {
+                                Image(systemName: monitor.brightnessSupported ? "checkmark.circle.fill" : "circle.dashed")
+                                Text(monitor.backend)
+                            }.font(.system(size: 10, weight: .medium)).foregroundStyle(monitor.brightnessSupported ? accent : .secondary)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
                 }
             }
             Panel {
@@ -271,7 +274,6 @@ private struct DisplayDetail: View {
                 Text("Darkens the image without changing backlight power. Resets when Display Desk quits.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            ImagingControls(service: service, monitor: monitor)
             Panel {
                 Label("Resolution & refresh rate", systemImage: "viewfinder").font(.system(size: 14, weight: .semibold))
                 HStack(alignment: .top, spacing: 20) {
@@ -296,6 +298,11 @@ private struct DisplayDetail: View {
                         .buttonStyle(.borderedProminent).disabled(service.controlsDisabled || chosen.matches(monitor.mode))
                 }
             }
+            if compact {
+                DisclosureGroup("Colour & HDR") { ImagingControls(service: service, monitor: monitor).padding(.top, 10) }
+                    .font(.system(size: 12, weight: .semibold)).padding(.horizontal, 4)
+            } else { ImagingControls(service: service, monitor: monitor) }
+
         }
         .onChange(of: monitor.mode.id) { _, value in modeID = value }
     }
@@ -406,45 +413,5 @@ private struct ImagingControls: View {
             case .failure(let error): service.errorMessage = error.localizedDescription
             }
         }
-    }
-}
-
-struct QuickControls: View {
-    @ObservedObject var service: DisplayService
-    @Environment(\.openWindow) private var openWindow
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Label("Display Desk", systemImage: "display.2").font(.system(size: 14, weight: .semibold))
-                Spacer()
-                Text("\(service.monitors.count) connected").font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(service.monitors) { monitor in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(monitor.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        Spacer()
-                        Text(monitor.brightness.map { "\(Int(($0 * 100).rounded()))%" } ?? "Software only").font(.caption).foregroundStyle(.secondary)
-                    }
-                    if monitor.brightnessSupported && monitor.brightness != nil {
-                        Slider(value: Binding(get: { monitor.brightness ?? 0.5 }, set: { service.setBrightness(uuid: monitor.uuid, value: $0) }), in: 0...1)
-                            .accessibilityLabel("Brightness for \(monitor.name)").disabled(service.controlsDisabled || service.isDiscovering)
-                    } else {
-                        Slider(value: Binding(get: { monitor.dimming }, set: { service.setDimming(uuid: monitor.uuid, amount: $0) }), in: 0...0.8)
-                            .accessibilityLabel("Software dimming for \(monitor.name)").disabled(service.controlsDisabled)
-                        Text("Software dimming").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            if service.hasPendingChanges {
-                Text("Confirm changes in the dashboard · \(service.secondsRemaining)s").font(.caption).foregroundStyle(accent)
-            }
-            Divider()
-            Button("Open display dashboard") { openWindow(id: "dashboard"); NSApplication.shared.activate(ignoringOtherApps: true) }
-                .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
-            SettingsLink { Text("Settings…") }
-            Button("Reset boost & dimming") { service.resetImageAdjustments() }.buttonStyle(.link)
-            Button("Quit Display Desk") { Task { if await service.prepareToQuit() { NSApplication.shared.terminate(nil) } } }.buttonStyle(.link)
-        }.padding(18).frame(width: 340).tint(accent)
     }
 }
