@@ -20,6 +20,8 @@ private struct Panel<Content: View>: View {
 struct DisplayDashboard: View {
     @ObservedObject var service: DisplayService
     @State private var showingSave = false
+    @State private var showingDiagnostics = false
+    @State private var showingArrangement = false
     @State private var profileName = ""
     @State private var deletingProfile: DisplayProfile?
 
@@ -52,6 +54,8 @@ struct DisplayDashboard: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .tint(accent)
         .sheet(isPresented: $showingSave) { saveSheet }
+        .sheet(isPresented: $showingDiagnostics) { DiagnosticsView(service: service) }
+        .sheet(isPresented: $showingArrangement) { ArrangementView(service: service) }
         .alert("Display Desk", isPresented: Binding(get: { service.errorMessage != nil }, set: { if !$0 { service.errorMessage = nil } })) {
             Button("OK") { service.errorMessage = nil }
         } message: { Text(service.errorMessage ?? "") }
@@ -144,6 +148,11 @@ struct DisplayDashboard: View {
                 Text("Brightness, clarity, and your preferred setup.").font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Spacer()
+            Button { showingArrangement = true } label: { Image(systemName: "rectangle.3.group").frame(width: 28, height: 28) }
+                .buttonStyle(.bordered).help("Arrange displays").accessibilityLabel("Arrange displays")
+                .disabled(service.controlsDisabled || service.monitors.isEmpty)
+            Button { showingDiagnostics = true } label: { Image(systemName: "stethoscope").frame(width: 28, height: 28) }
+                .buttonStyle(.bordered).help("Display diagnostics").accessibilityLabel("Diagnostics")
             SettingsLink { Image(systemName: "gearshape").frame(width: 28, height: 28) }
                 .buttonStyle(.bordered).help("Display Desk settings").accessibilityLabel("Settings")
             if service.isDiscovering || service.isBusy || service.isRecovering { ProgressView().controlSize(.small) }
