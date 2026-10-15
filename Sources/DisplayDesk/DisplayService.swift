@@ -101,12 +101,16 @@ final class DisplayService: ObservableObject {
     @Published var secondsRemaining = 15
     @Published var colorProfiles: [ColorProfileChoice] = []
     @Published var imagingBusy = false
+    @Published private(set) var automaticProfiles = AutomaticProfileConfiguration()
     let isPreview: Bool
 
     private let hardware = BrightnessHardware()
     private let shades = DimmingWindows()
     private let imaging = DisplayImaging()
     private let store: ProfileStore
+    private let automaticStore: AutomaticProfileStore
+    private var automaticTask: Task<Void, Never>?
+    private var lastAutomaticTopology: [String]?
     private var pendingBackup: [DisplaySetting]?
     private var rollbackTask: Task<Void, Never>?
     private var reloadTask: Task<Void, Never>?
@@ -126,9 +130,12 @@ final class DisplayService: ObservableObject {
         isPreview = preview
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         store = ProfileStore(fileURL: base.appendingPathComponent("DisplayDesk/profiles.json"))
+        automaticStore = AutomaticProfileStore(fileURL: base.appendingPathComponent("DisplayDesk/automation.json"))
         if preview {
             loadPreview()
         } else {
+            do { automaticProfiles = try automaticStore.load() }
+            catch { errorMessage = "Could not read automatic profiles: \(error.localizedDescription)" }
             do { profiles = try store.load() }
             catch { errorMessage = "Could not read saved profiles: \(error.localizedDescription)" }
             registeredCallback = CGDisplayRegisterReconfigurationCallback(Self.callback, Unmanaged.passUnretained(self).toOpaque()) == .success
@@ -150,7 +157,7 @@ final class DisplayService: ObservableObject {
     isolated deinit {
         if registeredCallback { CGDisplayRemoveReconfigurationCallback(Self.callback, Unmanaged.passUnretained(self).toOpaque()) }
         rollbackTask?.cancel(); reloadTask?.cancel()
-        imagingTask?.cancel()
+        imagingTask?.cancel(); automaticTask?.cancel()
         for task in brightnessTasks.values { task.cancel() }
     }
 
@@ -217,7 +224,10 @@ final class DisplayService: ObservableObject {
                 if brightnessTasks[uuid] == nil && !isBusy { monitors[index].brightness = brightness }
             }
         }
-        if refreshGeneration == generation { isDiscovering = false }
+        if refreshGeneration == generation {
+            isDiscovering = false
+            scheduleAutomaticProfile()
+        }
     }
 
     func setBrightness(uuid: String, value: Double) {
@@ -322,6 +332,54 @@ final class DisplayService: ObservableObject {
             resetDimming()
             for index in monitors.indices { monitors[index].imaging = imaging.state(monitors[index].id) }
         } catch { errorMessage = "Could not restore the colour curves: \(error.localizedDescription)" }
+    }
+
+    var externalTopology: [String] { monitors.filter { !$0.builtIn }.map(\.uuid).sorted() }
+
+    func setAutomaticProfilesEnabled(_ enabled: Bool) {
+        var next = automaticProfiles; next.enabled = enabled
+        saveAutomaticConfiguration(next)
+    }
+
+    func addAutomaticProfile(profileID: UUID) {
+        guard !externalTopology.isEmpty, profiles.contains(where: { $0.id == profileID }) else { return }
+        var next = automaticProfiles
+        next.rules.removeAll { Set($0.externalDisplayUUIDs) == Set(externalTopology) }
+        next.rules.append(AutomaticProfileRule(profileID: profileID, externalDisplayUUIDs: externalTopology))
+        saveAutomaticConfiguration(next)
+    }
+
+    func removeAutomaticProfile(id: UUID) {
+        var next = automaticProfiles; next.rules.removeAll { $0.id == id }
+        saveAutomaticConfiguration(next)
+    }
+
+    private func saveAutomaticConfiguration(_ next: AutomaticProfileConfiguration) {
+        guard !isPreview else { return }
+        do {
+            try automaticStore.save(next)
+            automaticProfiles = next
+            automaticTask?.cancel(); lastAutomaticTopology = nil
+            scheduleAutomaticProfile()
+        } catch { errorMessage = "Could not save automatic profiles: \(error.localizedDescription)" }
+    }
+
+    private func scheduleAutomaticProfile() {
+        let topology = externalTopology
+        guard automaticProfiles.enabled, topology != lastAutomaticTopology else { return }
+        automaticTask?.cancel()
+        automaticTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
+            guard let self, !Task.isCancelled, self.externalTopology == topology,
+                  !self.controlsDisabled, !self.isDiscovering else { return }
+            self.lastAutomaticTopology = topology
+            guard let profileID = self.automaticProfiles.matchingProfile(externalDisplayUUIDs: topology, availableProfileIDs: Set(self.profiles.map(\.id))),
+                  let profile = self.profiles.first(where: { $0.id == profileID }) else { return }
+            await self.applyProfile(profile)
+            guard self.hasPendingChanges else { return }
+            self.statusMessage = "Automatic profile: \(profile.name). Keep changes within 15 seconds."
+            NotificationCenter.default.post(name: .displayDeskShowDashboard, object: nil)
+        }
     }
 
     func saveProfile(name: String) {
@@ -536,6 +594,7 @@ final class DisplayService: ObservableObject {
         guard !imagingBusy && !isBusy else { errorMessage = "Wait for the display adjustment to finish, then quit again."; return false }
         if hasPendingChanges { await revert() }
         guard !hasPendingChanges else { return false }
+        automaticTask?.cancel()
         for task in brightnessTasks.values { task.cancel() }
         do { try imaging.stopAllBoosts() }
         catch { errorMessage = "Could not restore colour curves before quitting: \(error.localizedDescription)"; return false }

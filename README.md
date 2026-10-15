@@ -99,3 +99,7 @@ Preview/                      Native renders with illustrative data
 ## Startup
 
 Open **Settings → Startup** to enable launch at login. This uses macOS Login Items and is off by default. Keep the app at a permanent path before enabling it. If macOS requests approval, use **Open Login Items…** to approve the registration. Turning it off unregisters the item; it does not install a helper or change display settings.
+
+## Automatic profiles
+
+In **Settings → Automatic profiles**, choose a saved profile and use it for the currently connected external-monitor setup. Enable automation separately. Rules match the exact external display UUID set, not connection order or display names. Startup and monitor connection changes are considered after discovery settles. Missing profiles, ambiguous rules, or unavailable saved displays/modes are not applied. The app previews changes and opens the dashboard: choose **Keep changes** within 15 seconds, or the previous setup is restored. One attempt is made per topology change; merely refocusing the app does not reapply a rule. Rules are stored locally in `~/Library/Application Support/DisplayDesk/automation.json`; this file contains device identities and should stay private.

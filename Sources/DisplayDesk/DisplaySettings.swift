@@ -1,6 +1,7 @@
 import AppKit
 import ServiceManagement
 import SwiftUI
+import DisplayDeskCore
 
 @MainActor
 final class LoginItemController: ObservableObject {
@@ -30,9 +31,33 @@ final class LoginItemController: ObservableObject {
 struct DisplaySettings: View {
     @ObservedObject var service: DisplayService
     @StateObject private var login = LoginItemController()
+    @State private var selectedProfile: UUID?
 
     var body: some View {
         Form {
+            Section("Automatic profiles") {
+                Toggle("Apply a profile when monitors connect", isOn: Binding(get: { service.automaticProfiles.enabled }, set: { service.setAutomaticProfilesEnabled($0) }))
+                    .disabled(service.isPreview)
+                Text("Matches the exact set of external monitors. Changes still require Keep changes within 15 seconds; otherwise the previous setup returns.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Picker("Profile for this monitor setup", selection: $selectedProfile) {
+                    Text("Choose a saved profile").tag(nil as UUID?)
+                    ForEach(service.profiles) { profile in Text(profile.name).tag(Optional(profile.id)) }
+                }
+                Button("Use for this setup") { if let selectedProfile { service.addAutomaticProfile(profileID: selectedProfile) } }
+                    .disabled(selectedProfile == nil || service.externalTopology.isEmpty || service.isPreview)
+                if service.externalTopology.isEmpty { Text("Connect an external monitor to create a rule.").font(.caption).foregroundStyle(.secondary) }
+                ForEach(service.automaticProfiles.rules) { rule in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(service.profiles.first { $0.id == rule.profileID }?.name ?? "Missing profile")
+                            Text("\(rule.externalDisplayUUIDs.count) external monitor(s)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Remove", role: .destructive) { service.removeAutomaticProfile(id: rule.id) }
+                    }
+                }
+            }
             Section("Startup") {
                 Toggle("Launch Display Desk at login", isOn: Binding(get: { login.enabled }, set: { requested in
                     Task { await login.setEnabled(requested) }
@@ -47,7 +72,7 @@ struct DisplaySettings: View {
                 if let message = login.message { Text(message).font(.caption).foregroundStyle(.red) }
             }
         }
-        .formStyle(.grouped).padding(12).frame(width: 560, height: 240)
+        .formStyle(.grouped).padding(12).frame(width: 560, height: 560)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in login.refresh() }
     }
 }
