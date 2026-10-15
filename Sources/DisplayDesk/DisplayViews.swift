@@ -145,6 +145,8 @@ struct DisplayDashboard: View {
                 Text("Brightness, clarity, and your preferred setup.").font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Spacer()
+            SettingsLink { Image(systemName: "gearshape").frame(width: 28, height: 28) }
+                .buttonStyle(.bordered).help("Display Desk settings").accessibilityLabel("Settings")
             if service.isDiscovering || service.isBusy { ProgressView().controlSize(.small) }
             Button { service.retryHardware() } label: { Image(systemName: "arrow.clockwise").frame(width: 28, height: 28) }
                 .buttonStyle(.bordered).help("Refresh displays and brightness").accessibilityLabel("Refresh displays")
@@ -432,6 +434,7 @@ struct QuickControls: View {
             Divider()
             Button("Open display dashboard") { openWindow(id: "dashboard"); NSApplication.shared.activate(ignoringOtherApps: true) }
                 .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
+            SettingsLink { Text("Settings…") }
             Button("Reset boost & dimming") { service.resetImageAdjustments() }.buttonStyle(.link)
             Button("Quit Display Desk") { Task { if await service.prepareToQuit() { NSApplication.shared.terminate(nil) } } }.buttonStyle(.link)
         }.padding(18).frame(width: 340).tint(accent)

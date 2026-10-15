@@ -31,6 +31,7 @@ struct DisplayDeskApp: App {
                 }.keyboardShortcut("q")
             }
         }
+        Settings { DisplaySettings(service: service) }
         MenuBarExtra("Display Desk", systemImage: "display.2") { QuickControls(service: service) }
             .menuBarExtraStyle(.window)
     }

@@ -95,3 +95,7 @@ Resources/                    App metadata and third-party license
 scripts/build-app.sh          Builds the standalone app bundle
 Preview/                      Native renders with illustrative data
 ```
+
+## Startup
+
+Open **Settings → Startup** to enable launch at login. This uses macOS Login Items and is off by default. Keep the app at a permanent path before enabling it. If macOS requests approval, use **Open Login Items…** to approve the registration. Turning it off unregisters the item; it does not install a helper or change display settings.
