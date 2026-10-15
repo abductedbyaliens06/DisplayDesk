@@ -14,6 +14,7 @@ final class BrightnessKeyboard: ObservableObject {
     var adjust: ((Double) -> Void)?
     private var hotKeys: [EventHotKeyRef] = []
     private var handler: EventHandlerRef?
+    private var localMonitor: Any?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
     private var swallowedNativeKeys = Set<Int>()
@@ -42,6 +43,7 @@ final class BrightnessKeyboard: ObservableObject {
         refreshNativeKeys()
     }
     private func configureShortcuts() {
+        if let localMonitor { NSEvent.removeMonitor(localMonitor); self.localMonitor = nil }
         for key in hotKeys { UnregisterEventHotKey(key) }; hotKeys.removeAll()
         if let handler { RemoveEventHandler(handler); self.handler = nil }
         message = nil
@@ -72,6 +74,16 @@ final class BrightnessKeyboard: ObservableObject {
                 return
             }
             hotKeys.append(key)
+        }
+        // Registered global shortcuts normally arrive as Carbon hot-key events.
+        // App-local keyDown events (including menu/window routing) are handled
+        // here as well; consumed global hot keys do not also deliver keyDown.
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.shortcutsEnabled, self.canAdjust?() == true,
+                  event.modifierFlags.intersection([.control, .option, .command, .shift]) == [.control, .option],
+                  event.keyCode == UInt16(kVK_UpArrow) || event.keyCode == UInt16(kVK_DownArrow) else { return event }
+            self.adjust?(event.keyCode == UInt16(kVK_UpArrow) ? 0.05 : -0.05)
+            return nil
         }
     }
     func refreshNativeKeys() {
@@ -118,6 +130,7 @@ final class BrightnessKeyboard: ObservableObject {
         tap = nil; tapSource = nil; nativeKeysActive = false; swallowedNativeKeys.removeAll()
     }
     func stop() {
+        if let localMonitor { NSEvent.removeMonitor(localMonitor); self.localMonitor = nil }
         for key in hotKeys { UnregisterEventHotKey(key) }; hotKeys.removeAll()
         if let handler { RemoveEventHandler(handler); self.handler = nil }
         stopNativeKeys()
