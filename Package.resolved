@@ -1,0 +1,15 @@
+{
+  "originHash" : "cfb952683dc8c91c9a7776121c83ee739486189083a025ef74b617121e6716e3",
+  "pins" : [
+    {
+      "identity" : "macbrightnesskit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/taketaku/MacBrightnessKit.git",
+      "state" : {
+        "revision" : "a7f73d6a1d9947c9efaa1bb6b56d33febf6f6d38",
+        "version" : "0.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}
