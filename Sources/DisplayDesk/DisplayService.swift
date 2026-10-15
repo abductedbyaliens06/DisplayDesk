@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Combine
+@preconcurrency import ApplicationServices
 import DisplayDeskCore
 import MacBrightnessKit
 
@@ -224,6 +225,30 @@ final class DisplayService: ObservableObject {
             self.statusMessage = "Displays refreshed after wake. HDR boost remains off."
             self.scheduleAutomaticProfile()
         }
+    }
+
+    func diagnosticScreen(_ monitor: Monitor, number: Int) -> DiagnosticScreen {
+        let path: DiagnosticControlPath
+        switch monitor.backend {
+        case "Apple display": path = .apple
+        case "DDC/CI": path = .ddc
+        case "DDC/CI · read-only": path = .ddcReadOnly
+        case "Checking…": path = .checking
+        default: path = .softwareOnly
+        }
+        return DiagnosticScreen(number: number, builtIn: monitor.builtIn, mode: monitor.mode, controlPath: path,
+                                brightness: monitor.brightness, hdrSupported: monitor.imaging.hdrSupported,
+                                hdrEnabled: monitor.imaging.hdrEnabled, edrHeadroom: monitor.imaging.headroom,
+                                boost: monitor.imaging.boost, metalBoost: monitor.imaging.boostMethod == "metal",
+                                customColorProfile: monitor.imaging.profileID != ColorProfileChoice.factoryID)
+    }
+
+    func diagnosticReport() -> DiagnosticReport {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return DiagnosticReport(appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+                                macOSVersion: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
+                                screenCaptureAllowed: screenCaptureAllowed, accessibilityAllowed: AXIsProcessTrusted(),
+                                screens: monitors.enumerated().map { diagnosticScreen($0.element, number: $0.offset + 1) })
     }
 
     func retryHardware() {

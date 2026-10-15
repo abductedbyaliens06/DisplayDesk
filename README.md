@@ -111,3 +111,7 @@ In **Settings → Brightness keys**, enable global **Control–Option–Up/Down*
 ## Sleep and wake
 
 System and display sleep pause keyboard interception, cancel queued brightness/discovery/automation work, remove software overlays, and stop HDR boost. Wake performs three bounded refreshes while controls are paused, clears stale DDC read-only results, restores software dimming and keyboard registration, and checks automatic-profile rules once the connection settles. An unconfirmed configuration is reverted after wake rather than being kept accidentally. HDR boost is not silently resumed by recovery; an explicitly configured automatic profile may request it as part of its normal confirmation preview.
+
+## Diagnostics
+
+Open the dashboard’s **Diagnostics** button to inspect hardware-control status, the current mode, HDR headroom, colour-profile assignment, and relevant permissions. Suggestions distinguish observed failures from possible causes: the app cannot read the monitor’s physical colour preset or identify a faulty cable from a failed DDC write. **Copy report** and **Export report…** produce an allowlisted JSON report with numbered screens, OS/app versions, mode/control readings and permission booleans. Device names, UUIDs, serials, ICC paths, raw logs and arbitrary error strings are excluded. Nothing is uploaded. Review the report before sharing; it still describes your display capabilities.
