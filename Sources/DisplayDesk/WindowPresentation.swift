@@ -7,13 +7,21 @@ import SwiftUI
 final class DashboardPresentation {
     private weak var dashboard: NSWindow?
     private var observers: [NSObjectProtocol] = []
+    private let changePolicy: (NSApplication.ActivationPolicy) -> Void
+    private let activate: () -> Void
 
-    func startInMenuBar() { NSApplication.shared.setActivationPolicy(.accessory) }
+    init(changePolicy: @escaping (NSApplication.ActivationPolicy) -> Void = { _ = NSApplication.shared.setActivationPolicy($0) },
+         activate: @escaping () -> Void = { NSApplication.shared.activate(ignoringOtherApps: true) }) {
+        self.changePolicy = changePolicy
+        self.activate = activate
+    }
+
+    func startInMenuBar() { changePolicy(.accessory) }
 
     func present(open: () -> Void) {
-        NSApplication.shared.setActivationPolicy(.regular)
+        changePolicy(.regular)
         open()
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        activate()
     }
 
     func track(_ window: NSWindow) {
@@ -22,13 +30,13 @@ final class DashboardPresentation {
         observers.removeAll()
         dashboard = window
         window.isRestorable = false
-        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { _ in
-            MainActor.assumeIsolated { _ = NSApplication.shared.setActivationPolicy(.regular) }
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.changePolicy(.regular) }
         })
         observers.append(NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.startInMenuBar() }
         })
-        if window.isVisible { NSApplication.shared.setActivationPolicy(.regular) }
+        if window.isVisible { changePolicy(.regular) }
     }
 
     isolated deinit {

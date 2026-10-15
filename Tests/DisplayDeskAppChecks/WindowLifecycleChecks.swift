@@ -3,27 +3,43 @@ import Foundation
 
 @main struct WindowLifecycleChecks {
     @MainActor static func main() {
-        let app = NSApplication.shared
-        let presentation = DashboardPresentation()
+        // This process never registers in the Dock or opens a window. Only the
+        // policy requests are recorded; real NSWindow close notifications are tested.
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        var policy: NSApplication.ActivationPolicy = .prohibited
+        var activations = 0
+        let presentation = DashboardPresentation(changePolicy: { policy = $0 }, activate: { activations += 1 })
+        func check(_ condition: Bool, _ message: String) {
+            if !condition {
+                FileHandle.standardError.write(Data("FAIL: \(message)\n".utf8))
+                exit(1)
+            }
+        }
+        func window() -> NSWindow {
+            let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            return window
+        }
         presentation.startInMenuBar()
-        precondition(app.activationPolicy() == .accessory, "Startup must have no Dock icon")
-        let dashboard = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        dashboard.isReleasedWhenClosed = false
+        check(policy == .accessory, "Startup must request accessory policy")
+        let dashboard = window()
         presentation.track(dashboard)
-        precondition(app.activationPolicy() == .accessory, "Creating hidden dashboard content must not add a Dock icon")
+        check(policy == .accessory, "Creating hidden content must not request a Dock icon")
         var didOpen = false
-        presentation.present { didOpen = true; dashboard.orderFront(nil) }
-        precondition(didOpen && app.activationPolicy() == .regular, "Explicit dashboard invocation must show the Dock")
-        let settings = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        settings.isReleasedWhenClosed = false
+        presentation.present { didOpen = true }
+        check(didOpen && policy == .regular && activations == 1, "Dashboard invocation must request regular policy and activation")
+        let settings = window()
         settings.close()
-        precondition(app.activationPolicy() == .regular, "Closing a utility window must not remove an open dashboard from the Dock")
+        check(policy == .regular, "Closing a utility must preserve the dashboard policy")
         dashboard.close()
-        precondition(app.activationPolicy() == .accessory, "Closing the dashboard must return to menu bar operation")
-        presentation.present { dashboard.orderFront(nil) }
-        precondition(app.activationPolicy() == .regular, "Reopening must restore the Dock")
-        dashboard.close()
-        precondition(app.activationPolicy() == .accessory, "Repeated dashboard closure must hide the Dock")
-        print("PASS: accessory startup, hidden dashboard, explicit opening, utility close, dashboard close, and repeated reopening.")
+        check(policy == .accessory, "Dashboard closure must request accessory policy")
+        let reopened = window()
+        presentation.track(reopened)
+        presentation.present { }
+        check(policy == .regular && activations == 2, "Reopening must request regular policy")
+        reopened.close()
+        check(policy == .accessory, "Closing the reopened dashboard must request accessory policy")
+        check(NSApplication.shared.activationPolicy() == .prohibited, "The test process must never become a Dock application")
+        print("PASS: dashboard policy requests and native close notifications; no Dock registration or visible windows.")
     }
 }

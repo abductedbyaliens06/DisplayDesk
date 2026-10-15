@@ -137,4 +137,4 @@ To check the AppKit Dock lifecycle on a Mac with an active graphical login:
 ./scripts/check-window-lifecycle.sh
 ```
 
-This exercises the real activation policy and window-close notifications in a separate test process, without changing display settings.
+This records activation-policy requests and exercises real window-close notifications in a separate test process. It never registers in the Dock, activates itself, opens visible windows, or changes display settings. Failed checks exit normally rather than triggering crash dialogs. A 15-second watchdog stops and reaps a hung check before its temporary executable is removed.
