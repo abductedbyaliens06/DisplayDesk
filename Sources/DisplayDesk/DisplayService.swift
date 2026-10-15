@@ -103,6 +103,7 @@ final class DisplayService: ObservableObject {
     @Published var imagingBusy = false
     @Published private(set) var automaticProfiles = AutomaticProfileConfiguration()
     let isPreview: Bool
+    let keyboard = BrightnessKeyboard()
 
     private let hardware = BrightnessHardware()
     private let shades = DimmingWindows()
@@ -138,6 +139,12 @@ final class DisplayService: ObservableObject {
             catch { errorMessage = "Could not read automatic profiles: \(error.localizedDescription)" }
             do { profiles = try store.load() }
             catch { errorMessage = "Could not read saved profiles: \(error.localizedDescription)" }
+            keyboard.canAdjust = { [weak self] in
+                guard let self else { return false }
+                return !self.controlsDisabled && !self.isDiscovering && !self.keyboardTargets.isEmpty
+            }
+            keyboard.adjust = { [weak self] delta in self?.adjustBrightnessFromKeyboard(delta: delta) }
+            keyboard.start()
             registeredCallback = CGDisplayRegisterReconfigurationCallback(Self.callback, Unmanaged.passUnretained(self).toOpaque()) == .success
             scheduleReload()
             imagingTask = Task { [weak self] in
@@ -332,6 +339,32 @@ final class DisplayService: ObservableObject {
             resetDimming()
             for index in monitors.indices { monitors[index].imaging = imaging.state(monitors[index].id) }
         } catch { errorMessage = "Could not restore the colour curves: \(error.localizedDescription)" }
+    }
+
+    private var keyboardTargets: [Monitor] {
+        switch keyboard.target {
+        case "all": return monitors
+        case "selected": return selected.map { [$0] } ?? []
+        default:
+            let point = NSEvent.mouseLocation
+            guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
+                  let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return [] }
+            return monitors.filter { $0.id == id }
+        }
+    }
+
+    func adjustBrightnessFromKeyboard(delta: Double) {
+        guard !controlsDisabled && !isDiscovering else { return }
+        let targets = keyboardTargets
+        for monitor in targets {
+            if monitor.brightnessSupported, let current = monitor.brightness,
+               let next = BrightnessStep.hardware(current: current, delta: delta) {
+                setBrightness(uuid: monitor.uuid, value: next)
+            } else if let next = BrightnessStep.dimming(current: monitor.dimming, delta: delta) {
+                setDimming(uuid: monitor.uuid, amount: next)
+            }
+        }
+        statusMessage = "Brightness adjusted on \(targets.count) display(s)."
     }
 
     var externalTopology: [String] { monitors.filter { !$0.builtIn }.map(\.uuid).sorted() }
@@ -598,6 +631,7 @@ final class DisplayService: ObservableObject {
         for task in brightnessTasks.values { task.cancel() }
         do { try imaging.stopAllBoosts() }
         catch { errorMessage = "Could not restore colour curves before quitting: \(error.localizedDescription)"; return false }
+        keyboard.stop()
         shades.clear()
         return true
     }

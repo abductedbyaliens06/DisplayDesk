@@ -35,6 +35,7 @@ struct DisplaySettings: View {
 
     var body: some View {
         Form {
+            KeyboardSettings(keyboard: service.keyboard, isPreview: service.isPreview)
             Section("Automatic profiles") {
                 Toggle("Apply a profile when monitors connect", isOn: Binding(get: { service.automaticProfiles.enabled }, set: { service.setAutomaticProfilesEnabled($0) }))
                     .disabled(service.isPreview)
@@ -72,7 +73,31 @@ struct DisplaySettings: View {
                 if let message = login.message { Text(message).font(.caption).foregroundStyle(.red) }
             }
         }
-        .formStyle(.grouped).padding(12).frame(width: 560, height: 560)
+        .formStyle(.grouped).padding(12).frame(width: 560, height: 680)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in login.refresh() }
+    }
+}
+
+private struct KeyboardSettings: View {
+    @ObservedObject var keyboard: BrightnessKeyboard
+    let isPreview: Bool
+    var body: some View {
+        Section("Brightness keys") {
+            Toggle("Use ⌃⌥↑ / ⌃⌥↓ shortcuts", isOn: Binding(get: { keyboard.shortcutsEnabled }, set: { keyboard.setShortcutsEnabled($0) }))
+            Toggle("Use native brightness keys", isOn: Binding(get: { keyboard.nativeKeysEnabled }, set: { keyboard.setNativeKeysEnabled($0) }))
+            Picker("Adjust", selection: $keyboard.target) {
+                Text("Monitor under pointer").tag("pointer")
+                Text("Selected monitor").tag("selected")
+                Text("All connected monitors").tag("all")
+            }
+            Text("5% steps; hold Shift with native keys for 1% steps. Screens without hardware control use software dimming. Keys never enable HDR boost.")
+                .font(.caption).foregroundStyle(.secondary)
+            if keyboard.nativeKeysEnabled && !keyboard.nativeKeysActive {
+                Button("Allow Accessibility…") { keyboard.requestAccessibility() }
+            }
+            if let message = keyboard.message { Text(message).font(.caption).foregroundStyle(.secondary) }
+        }
+        .disabled(isPreview)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in keyboard.refreshNativeKeys() }
     }
 }
