@@ -127,9 +127,9 @@ New profiles include positions and the main display when the current layout is s
 
 ## Menu bar and Dock behaviour
 
-Display Desk starts as a menu bar app, including when launched at login. It does not restore an old dashboard window at startup. Brightness, software dimming, resolution/refresh rate, colour/HDR controls, saving/applying/deleting profiles, and preview confirmation are available from the dropdown. Colour/HDR controls expand on demand. Errors and status messages appear there too.
+Display Desk runs in the background and shows its menu bar icon only while an external display is connected, including when launched at login. The icon disappears when the last external display disconnects and returns automatically when one connects. A built-in laptop display alone does not show the icon. Discovery continues while it is hidden; there is no polling loop added for icon visibility. It does not restore an old dashboard window at startup. Brightness, software dimming, resolution/refresh rate, colour/HDR controls, saving/applying/deleting profiles, and preview confirmation are available from the dropdown. Colour/HDR controls expand on demand. Errors and status messages appear there too.
 
-**Open dashboard** shows the larger window and a Dock icon. Closing that window removes the Dock icon while keeping monitoring, shortcuts, and display adjustments active. Minimizing it keeps the dashboard open and its Dock icon available. Settings, arrangement, and diagnostics can be opened without a dashboard or Dock icon. Automatic profiles do not open the dashboard; unconfirmed changes still time out normally. Explicitly reopening the running app from Finder brings up the dashboard.
+**Open dashboard** shows the larger window and a Dock icon. Closing that window removes the Dock icon while keeping monitoring, shortcuts, and display adjustments active. Minimizing it keeps the dashboard open and its Dock icon available. Settings, arrangement, and diagnostics can be opened without a dashboard or Dock icon. Automatic profiles do not open the dashboard; unconfirmed changes still time out normally. Explicitly reopening the running app from Finder brings up the dashboard, even when no external display is connected and the menu bar icon is hidden.
 
 To check the AppKit Dock lifecycle on a Mac with an active graphical login:
 
