@@ -6,8 +6,9 @@ private enum QuickTab: String, CaseIterable { case display = "Display", profiles
 
 struct QuickControls: View {
     @ObservedObject var service: DisplayService
-    let presentation: DashboardPresentation
-    @Environment(\.openWindow) private var openWindow
+    let openDashboard: () -> Void
+    let openSettings: () -> Void
+    let openUtility: (String) -> Void
     @State private var tab: QuickTab = .display
     @State private var profileName = ""
     @State private var deleting: DisplayProfile?
@@ -27,7 +28,7 @@ struct QuickControls: View {
                 Button { service.retryHardware() } label: { Image(systemName: "arrow.clockwise").frame(width: 26, height: 26) }
                     .buttonStyle(.borderless).accessibilityLabel("Refresh displays")
                     .disabled(service.controlsDisabled || service.isDiscovering)
-                SettingsLink { Image(systemName: "gearshape").frame(width: 26, height: 26) }
+                Button(action: openSettings) { Image(systemName: "gearshape").frame(width: 26, height: 26) }
                     .buttonStyle(.borderless).accessibilityLabel("Display Desk settings")
             }.padding(18)
             Picker("Controls", selection: $tab) { ForEach(QuickTab.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
@@ -48,7 +49,7 @@ struct QuickControls: View {
             if service.hasPendingChanges { confirmation }
             Divider()
             HStack(spacing: 12) {
-                Button("Open dashboard") { presentation.present { openWindow(id: "dashboard") } }
+                Button("Open dashboard", action: openDashboard)
                     .buttonStyle(.borderedProminent)
                 Spacer(minLength: 0)
                 Menu {
@@ -130,9 +131,5 @@ struct QuickControls: View {
                 Button("Keep changes") { service.keepChanges() }.buttonStyle(.borderedProminent)
             }.disabled(service.isBusy || service.imagingBusy)
         }.padding(16).background(accent.opacity(0.09))
-    }
-    private func openUtility(_ id: String) {
-        openWindow(id: id)
-        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 }

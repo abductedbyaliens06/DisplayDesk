@@ -19,6 +19,7 @@ private struct Panel<Content: View>: View {
 
 struct DisplayDashboard: View {
     @ObservedObject var service: DisplayService
+    var openSettings: () -> Void = {}
     @State private var showingSave = false
     @State private var showingDiagnostics = false
     @State private var showingArrangement = false
@@ -153,7 +154,7 @@ struct DisplayDashboard: View {
                 .disabled(service.controlsDisabled || service.monitors.isEmpty)
             Button { showingDiagnostics = true } label: { Image(systemName: "stethoscope").frame(width: 28, height: 28) }
                 .buttonStyle(.bordered).help("Display diagnostics").accessibilityLabel("Diagnostics")
-            SettingsLink { Image(systemName: "gearshape").frame(width: 28, height: 28) }
+            Button(action: openSettings) { Image(systemName: "gearshape").frame(width: 28, height: 28) }
                 .buttonStyle(.bordered).help("Display Desk settings").accessibilityLabel("Settings")
             if service.isDiscovering || service.isBusy || service.isRecovering { ProgressView().controlSize(.small) }
             Button { service.retryHardware() } label: { Image(systemName: "arrow.clockwise").frame(width: 28, height: 28) }

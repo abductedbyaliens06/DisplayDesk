@@ -3,6 +3,7 @@ import DisplayDeskCore
 
 struct ArrangementView: View {
     @ObservedObject var service: DisplayService
+    var onDone: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var screens: [LayoutScreen] = []
     @State private var original: [LayoutScreen] = []
@@ -32,7 +33,7 @@ struct ArrangementView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Done") { finish() }.keyboardShortcut(.cancelAction)
             }
             canvas.frame(height: 290)
                 .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
@@ -76,7 +77,7 @@ struct ArrangementView: View {
                     Task {
                         message = nil
                         await service.changeArrangement(screens)
-                        if service.hasPendingChanges { dismiss() }
+                        if service.hasPendingChanges { finish() }
                         else { message = service.errorMessage ?? "The layout could not be applied." }
                     }
                 }.buttonStyle(.borderedProminent)
@@ -168,4 +169,8 @@ struct ArrangementView: View {
         }
         normalize(main: main)
     }
+    private func finish() {
+        if let onDone { onDone() } else { dismiss() }
+    }
+
 }
