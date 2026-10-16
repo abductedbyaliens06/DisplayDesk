@@ -138,3 +138,13 @@ To check the AppKit Dock lifecycle on a Mac with an active graphical login:
 ```
 
 This records activation-policy requests and exercises real window-close notifications in a separate test process. It never registers in the Dock, activates itself, opens visible windows, or changes display settings. Failed checks exit normally rather than triggering crash dialogs. A 15-second watchdog stops and reaps a hung check before its temporary executable is removed.
+
+The menu icon uses a native AppKit status item with a SwiftUI popover. Insertion/removal is driven directly by settled display discovery, without observing monitor updates at the application scene root. Dashboard and utility windows are created on explicit requests and do not depend on the icon being present. This avoids the repeated scene/main-menu rebuild seen in version 0.5.1.
+
+For the native status-item reconnect regression check:
+
+```sh
+./scripts/check-status-item.sh
+```
+
+On a Mac with a graphical login, this briefly creates/removes test status icons across five simulated reconnect cycles, then removes them all. It never registers in the Dock, opens application windows, or changes monitor hardware settings. It uses a temporary executable and the same bounded cleanup as the window checks. Monitor connect/disconnect and sleep/wake should also be checked with the running app.

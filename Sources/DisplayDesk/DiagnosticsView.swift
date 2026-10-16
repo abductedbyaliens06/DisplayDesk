@@ -14,6 +14,7 @@ private struct DiagnosticDocument: FileDocument {
 
 struct DiagnosticsView: View {
     @ObservedObject var service: DisplayService
+    var onDone: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var exporting = false
     @State private var exportDocument = DiagnosticDocument(data: Data())
@@ -27,7 +28,7 @@ struct DiagnosticsView: View {
                     Text("Current readings and practical next steps").foregroundStyle(.secondary).font(.caption)
                 }
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Done") { finish() }.keyboardShortcut(.cancelAction)
             }.padding(22)
             Form {
                 ForEach(Array(service.monitors.enumerated()), id: \.element.uuid) { index, monitor in
@@ -73,4 +74,8 @@ struct DiagnosticsView: View {
             if case .failure(let error) = result { message = error.localizedDescription }
         }
     }
+    private func finish() {
+        if let onDone { onDone() } else { dismiss() }
+    }
+
 }
